@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF 章節智慧分割工具 (由 Gemini 驅動)</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; margin: 0; padding: 2rem; background-color: #f4f7f6; color: #333; }
+        .container { max-width: 800px; margin: auto; background: #fff; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; text-align: center; }
+        .input-group { margin-bottom: 1.5rem; }
+        label { display: block; margin-bottom: 0.5rem; font-weight: bold; color: #555; }
+        input[type="text"], input[type="file"] { width: 100%; padding: 0.8rem; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        .api-key-warning { font-size: 0.8rem; color: #e74c3c; background-color: #fdd; padding: 0.5rem; border-radius: 4px; margin-top: 0.5rem; }
+        .api-key-link {
+            font-weight: normal;
+            font-size: 0.9em;
+            margin-left: 8px;
+            text-decoration: none;
+        }
+        .api-key-link:hover {
+            text-decoration: underline;
+        }
+        .remember-me-group {
+            display: flex;
+            align-items: center;
+            margin-top: 0.8rem;
+        }
+        #remember-key {
+            margin: 0 0.5rem 0 0;
+            width: auto; /* Override default input width */
+        }
+        .remember-me-group label {
+            font-weight: normal;
+            font-size: 0.9em;
+            color: #555;
+            margin-bottom: 0; /* Override default label margin */
+            cursor: pointer;
+        }
+        button { width: 100%; padding: 1rem; background-color: #3498db; color: white; border: none; border-radius: 4px; font-size: 1rem; cursor: pointer; transition: background-color 0.3s; }
+        button:hover { background-color: #2980b9; }
+        button:disabled { background-color: #bdc3c7; cursor: not-allowed; }
+        #status { margin-top: 1.5rem; padding: 1rem; background: #eaf2f8; border-left: 5px solid #3498db; border-radius: 4px; text-align: center; font-weight: bold; display: none; }
+        #results-container { margin-top: 2rem; }
+        .chapter-item { display: flex; justify-content: space-between; align-items: center; padding: 1rem; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 0.8rem; background: #fafafa; }
+        .chapter-info { font-size: 1.1rem; }
+        .chapter-title { font-weight: bold; }
+        .chapter-pages { font-size: 0.9rem; color: #666; margin-left: 1rem; }
+        .download-btn { padding: 0.5rem 1rem; background: #2ecc71; color: white; text-decoration: none; border-radius: 4px; transition: background-color 0.3s; width: auto; font-size: 0.9rem; }
+        .download-btn:hover { background: #27ae60; }
+        #download-all-btn { background-color: #16a085; width: auto; padding: 0.8rem 1.5rem; }
+        #download-all-btn:hover { background-color: #117a65; }
+        #download-all-container { display: none; margin-bottom: 1.5rem; padding: 1rem; background-color: #eafaf1; border-radius: 4px; border: 1px solid #d1e7dd; }
+        #download-all-status { margin-top: 0.8rem; font-size: 0.9em; color: #0f5132; text-align: center; }
+    </style>
+    <!-- PDF.js and PDF-Lib via CDN -->
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
+    <script>
+        // Set worker path for pdf.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.worker.min.js`;
+    </script>
+</head>
+<body>
+
+    <div class="container">
+        <h1>PDF 章節智慧分割工具</h1>
+        <p>此工具會讀取 PDF 的前 20 頁，使用 Gemini AI 分析目錄，並提供依章節分割後的檔案下載。</p>
+        
+        <div class="input-group">
+            <label for="api-key">
+                你的 Google AI Gemini API Key 
+                <a href="https://aistudio.google.com/prompts/new_chat" target="_blank" rel="noopener noreferrer" class="api-key-link">(免費取得 API KEY)</a>
+            </label>
+            <input type="text" id="api-key" placeholder="在此貼上你的 API Key">
+            <div class="remember-me-group">
+                <input type="checkbox" id="remember-key" name="remember-key">
+                <label for="remember-key">記住我的 API Key (儲存在您的瀏覽器中)</label>
+            </div>
+            <div class="api-key-warning"><strong>安全警告：</strong>此金鑰僅在您的瀏覽器中使用，不會上傳到我們的伺服器。</div>
+        </div>
+
+        <div class="input-group">
+            <label for="pdf-input">選擇你的 PDF 檔案</label>
+            <input type="file" id="pdf-input" accept=".pdf">
+        </div>
+
+        <button id="analyze-btn">1. 分析目錄</button>
+
+        <div id="status"></div>
+        <div id="results-container"></div>
+    </div>
+
+    <script>
+        const apiKeyInput = document.getElementById('api-key');
+        const rememberKeyCheckbox = document.getElementById('remember-key');
+        const pdfInput = document.getElementById('pdf-input');
+        const analyzeBtn = document.getElementById('analyze-btn');
+        const statusDiv = document.getElementById('status');
+        const resultsContainer = document.getElementById('results-container');
+
+        const STORAGE_KEY = 'geminiSplitterApiKey';
+        let originalPdfBytes = null;
+        let totalPages = 0;
+        let chaptersData = [];
+
+        // --- On Page Load: Check for saved API Key ---
+        (function loadSavedData() {
+            const savedApiKey = localStorage.getItem(STORAGE_KEY);
+            if (savedApiKey) {
+                apiKeyInput.value = savedApiKey;
+                rememberKeyCheckbox.checked = true;
+            }
+        })();
+
+        analyzeBtn.addEventListener('click', handleAnalysis);
+
+        async function handleAnalysis() {
+            const apiKey = apiKeyInput.value.trim();
+            const file = pdfInput.files[0];
+
+            // --- Save or remove API Key from localStorage ---
+            if (rememberKeyCheckbox.checked) {
+                localStorage.setItem(STORAGE_KEY, apiKey);
+            } else {
+                localStorage.removeItem(STORAGE_KEY);
+            }
+
+            if (!apiKey) {
+                alert('請輸入你的 Gemini API Key。');
+                return;
+            }
+            if (!file) {
+                alert('請選擇一個 PDF 檔案。');
+                return;
+            }
+
+            analyzeBtn.disabled = true;
+            analyzeBtn.textContent = '處理中...';
+            resultsContainer.innerHTML = '';
+            showStatus('正在讀取 PDF 檔案...');
+
+            try {
+                const reader = new FileReader();
+                reader.onload = async (event) => {
+                    originalPdfBytes = new Uint8Array(event.target.result);
+                    
+                    showStatus('正在從前 20 頁擷取目錄文字...');
+                    const tocText = await extractTextFromPdf(originalPdfBytes);
+                    
+                    if (!tocText.trim()) {
+                        throw new Error('無法從 PDF 前 20 頁擷取到任何文字。請確認 PDF 非圖片掃描檔。');
+                    }
+
+                    showStatus('正在呼叫 Gemini AI 分析目錄結構...');
+                    const chapters = await analyzeTocWithGemini(tocText, apiKey);
+                    
+                    showStatus(`分析完成！共找到 ${chapters.length} 個章節。`);
+                    displayResults(chapters);
+                };
+                reader.readAsArrayBuffer(file);
+            } catch (error) {
+                showStatus(`發生錯誤：${error.message}`, true);
+                console.error(error);
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = '1. 分析目錄';
+            }
+        }
+
+        async function extractTextFromPdf(pdfBytes) {
+            const pdfDoc = await pdfjsLib.getDocument({ data: pdfBytes }).promise;
+            totalPages = pdfDoc.numPages;
+            const maxPagesToScan = Math.min(20, totalPages);
+            let fullText = '';
+
+            for (let i = 1; i <= maxPagesToScan; i++) {
+                const page = await pdfDoc.getPage(i);
+                const textContent = await page.getTextContent();
+                const pageText = textContent.items.map(item => item.str).join(' ');
+                fullText += pageText + '\n\n';
+            }
+            return fullText;
+        }
+
+        async function analyzeTocWithGemini(text, apiKey) {
+            const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`;
+
+            const prompt = `
+                你是一個專業的文檔分析助手。請分析以下從一本書的目錄中提取的文字。
+                你的任務是識別出每個章節的標題和它開始的頁碼。
+
+                規則：
+                1. 忽略任何前言、序、簡介等非主要章節的部分。
+                2. 僅輸出主要的章節，例如 "Chapter 1", "第一章", "Part 2" 等。
+                3. 你的輸出必須是純粹的 JSON 陣列格式，不包含任何額外的解釋或 markdown 語法 (如 \`\`\`json)。
+                4. 每個陣列元素都是一個物件，包含 "title" (字串) 和 "page" (數字) 兩個鍵。
+                5. 如果一個標題沒有明確的頁碼，請忽略它。
+
+                範例輸出格式：
+                [
+                    {"title": "第一章：宇宙的起源", "page": 15},
+                    {"title": "第二章：恆星的生命週期", "page": 45},
+                    {"title": "第三章：黑洞的奧秘", "page": 82}
+                ]
+
+                以下是待分析的目錄文字：
+                ---
+                ${text}
+                ---
+            `;
+
+            const response = await fetch(API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: prompt }] }]
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(`Gemini API 請求失敗: ${errorData.error?.message || response.statusText}`);
+            }
+
+            const data = await response.json();
+            const rawJson = data.candidates[0].content.parts[0].text;
+            
+            const cleanedJson = rawJson.replace(/```json\n?|```/g, '').trim();
+
+            try {
+                return JSON.parse(cleanedJson);
+            } catch(e) {
+                console.error("無法解析 Gemini 回傳的 JSON:", cleanedJson);
+                throw new Error("Gemini 回傳的格式不正確，無法解析。");
+            }
+        }
+
+        function displayResults(chapters) {
+            if (chapters.length === 0) {
+                showStatus('AI 未能從目錄中識別出任何章節。', true);
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = '1. 分析目錄';
+                return;
+            }
+
+            chaptersData = chapters.map((chapter, i) => {
+                const startPage = chapter.page;
+                const endPage = (i + 1 < chapters.length) ? chapters[i + 1].page - 1 : totalPages;
+                return { ...chapter, endPage };
+            });
+
+            let html = `
+                <h2>2. 下載分割後的章節檔案</h2>
+                <div id="download-all-container">
+                    <button id="download-all-btn">全部下載 (${chaptersData.length}個檔案)</button>
+                    <div id="download-all-status"></div>
+                </div>
+            `;
+            chaptersData.forEach((chapter) => {
+                html += `
+                    <div class="chapter-item">
+                        <div class="chapter-info">
+                            <span class="chapter-title">${chapter.title}</span>
+                            <span class="chapter-pages">(p. ${chapter.page} - ${chapter.endPage})</span>
+                        </div>
+                        <button class="download-btn" data-start="${chapter.page}" data-end="${chapter.endPage}" data-title="${sanitizeFileName(chapter.title)}">
+                            下載
+                        </button>
+                    </div>
+                `;
+            });
+            resultsContainer.innerHTML = html;
+            
+            document.getElementById('download-all-container').style.display = 'block';
+
+            document.getElementById('download-all-btn').addEventListener('click', handleDownloadAll);
+            document.querySelectorAll('.download-btn').forEach(button => {
+                button.addEventListener('click', handleDownload);
+            });
+            
+            analyzeBtn.disabled = false;
+            analyzeBtn.textContent = '1. 重新分析';
+        }
+        
+        async function createAndDownloadChapterPdf(startPage, endPage, title) {
+            try {
+                const { PDFDocument } = PDFLib;
+                const originalPdfDoc = await PDFDocument.load(originalPdfBytes);
+                const newPdfDoc = await PDFDocument.create();
+                const pageIndices = [];
+                for (let i = startPage - 1; i < endPage; i++) {
+                    if (i >= 0 && i < originalPdfDoc.getPageCount()) {
+                         pageIndices.push(i);
+                    }
+                }
+                if (pageIndices.length === 0) {
+                    throw new Error(`章節 "${title}" 的頁碼範圍 (${startPage}-${endPage}) 無效或找不到對應頁面。`);
+                }
+                const copiedPages = await newPdfDoc.copyPages(originalPdfDoc, pageIndices);
+                copiedPages.forEach(page => newPdfDoc.addPage(page));
+                const newPdfBytes = await newPdfDoc.save();
+                downloadBlob(newPdfBytes, `${title}.pdf`, 'application/pdf');
+            } catch (error) {
+                showStatus(`產生檔案 "${title}" 時出錯: ${error.message}`, true);
+                console.error(error);
+                throw error;
+            }
+        }
+
+        async function handleDownload(event) {
+            const button = event.target;
+            const startPage = parseInt(button.dataset.start);
+            const endPage = parseInt(button.dataset.end);
+            const title = button.dataset.title;
+            button.textContent = '產生中...';
+            button.disabled = true;
+            showStatus(`正在產生檔案: ${title}.pdf...`);
+            try {
+                await createAndDownloadChapterPdf(startPage, endPage, title);
+                showStatus(`檔案 ${title}.pdf 已準備好下載！`);
+            } catch (error) {
+                 // Error is already shown in createAndDownloadChapterPdf
+            } finally {
+                button.textContent = '下載';
+                button.disabled = false;
+            }
+        }
+
+        async function handleDownloadAll() {
+            const downloadAllBtn = document.getElementById('download-all-btn');
+            const allIndividualBtns = document.querySelectorAll('.download-btn');
+            const statusEl = document.getElementById('download-all-status');
+            downloadAllBtn.disabled = true;
+            allIndividualBtns.forEach(btn => btn.disabled = true);
+            const totalChapters = chaptersData.length;
+            let successCount = 0;
+            let errorCount = 0;
+            for (let i = 0; i < totalChapters; i++) {
+                const chapter = chaptersData[i];
+                const title = sanitizeFileName(chapter.title);
+                statusEl.textContent = `處理中 (${i + 1}/${totalChapters}): ${chapter.title}...`;
+                try {
+                    await createAndDownloadChapterPdf(chapter.page, chapter.endPage, title);
+                    successCount++;
+                } catch (error) {
+                    errorCount++;
+                }
+                await new Promise(resolve => setTimeout(resolve, 500)); 
+            }
+            statusEl.textContent = `全部處理完成！成功下載 ${successCount} 個檔案，失敗 ${errorCount} 個。`;
+            downloadAllBtn.disabled = false;
+            allIndividualBtns.forEach(btn => btn.disabled = false);
+        }
+
+        function downloadBlob(data, fileName, mimeType) {
+            const blob = new Blob([data], { type: mimeType });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        }
+
+        function sanitizeFileName(name) {
+            return name.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '_');
+        }
+
+        function showStatus(message, isError = false) {
+            statusDiv.style.display = 'block';
+            statusDiv.textContent = message;
+            statusDiv.style.borderColor = isError ? '#e74c3c' : '#3498db';
+            statusDiv.style.backgroundColor = isError ? '#fdd' : '#eaf2f8';
+            statusDiv.style.color = isError ? '#c0392b' : '#2c3e50';
+        }
+    </script>
+</body>
+</html>
