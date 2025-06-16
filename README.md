@@ -1,4 +1,4 @@
-https://aaasdream.github.io/Smart-PDF-Chapter-Splitter/SmartPDFChapterSplitter.html(https://aaasdream.github.io/Smart-PDF-Chapter-Splitter/SmartPDFChapterSplitter.html)
+https://aaasdream.github.io/Smart-PDF-Chapter-Splitter/SmartPDFChapterSplitter.html
 
 
 # PDF Chapterizer - 智慧 PDF 章節分割工具
